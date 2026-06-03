@@ -12,20 +12,22 @@ from telegram.ext import (
 TOKEN = "8751256202:AAHNVreF9fcad96N1pP2cbNgN_8TO2YkvVw"
 KYIV = timezone(timedelta(hours=3))
 MORNING_HOUR = 9
-
-# ─── СПИСОК АДМИНОВ — добавляй/удаляй ID сюда ───────────────────────────────
-ADMIN_IDS = [
-    7382509664,   # основной админ (Kurama)
-    6473328208,   # дополнительный админ
-]
-# ─────────────────────────────────────────────────────────────────────────────
-
-ADMIN_ID = ADMIN_IDS[0]   # первый в списке — "главный" (для обратной совместимости)
+ADMIN_ID = 7382509664
 ADMIN_NICK = "Kurama"
 
-def is_admin(user_id: int) -> bool:
-    """Проверяет, является ли пользователь админом"""
-    return user_id in ADMIN_IDS
+# Второй админ
+ADMIN2_ID = 6473328208    
+ADMIN2_NICK = "Vorobey"
+
+def is_admin(user_id):
+    return user_id == ADMIN_ID or (ADMIN2_ID and user_id == ADMIN2_ID)
+
+def get_admin_nick(user_id):
+    if user_id == ADMIN_ID:
+        return ADMIN_NICK
+    if ADMIN2_ID and user_id == ADMIN2_ID:
+        return ADMIN2_NICK
+    return None
 
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 
@@ -35,7 +37,7 @@ logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=lo
     PLAN_TASKS,
     RATING_ADD_USERNAME, RATING_ADD_NAME,
     RATING_POINTS_WHO, RATING_POINTS_DELTA, RATING_POINTS_COMMENT,
-    TASK_TARGET, TASK_TEXT,
+    RATING_EDIT_NEW_NAME, RATING_EDIT_NEW_POINTS,
 ) = range(12)
 
 # ─── БД ───────────────────────────────────────────────────────────────────────
@@ -71,20 +73,6 @@ def init_db():
         display_name TEXT NOT NULL,
         points INTEGER DEFAULT 0
     )""")
-    c.execute("""CREATE TABLE IF NOT EXISTS tasks (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        created_by INTEGER NOT NULL,
-        target_user_id INTEGER,
-        task_text TEXT NOT NULL,
-        created_at TEXT NOT NULL
-    )""")
-    c.execute("""CREATE TABLE IF NOT EXISTS task_confirmations (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        task_id INTEGER NOT NULL,
-        user_id INTEGER NOT NULL,
-        confirmed INTEGER DEFAULT 0,
-        confirmed_at TEXT
-    )""")
     conn.commit()
     conn.close()
 
@@ -92,19 +80,13 @@ def get_conn():
     return sqlite3.connect("/app/data/bot.db")
 
 def get_user_nick(user_id):
-    if user_id == ADMIN_ID:
-        return ADMIN_NICK
+    admin_nick = get_admin_nick(user_id)
+    if admin_nick:
+        return admin_nick
     conn = get_conn()
     row = conn.execute("SELECT nick FROM users WHERE user_id=?", (user_id,)).fetchone()
     conn.close()
     return row[0] if row else None
-
-def get_all_operators():
-    """Возвращает список всех зарегистрированных операторов (не-админов)"""
-    conn = get_conn()
-    rows = conn.execute("SELECT user_id, nick FROM users ORDER BY nick").fetchall()
-    conn.close()
-    return rows
 
 def save_user_nick(user_id, nick):
     conn = get_conn()
@@ -120,7 +102,7 @@ def main_menu_keyboard(user_id):
         ["🏆 Рейтинг команды"],
     ]
     if is_admin(user_id):
-        rows.append(["👁 Напоминалки оперов", "📌 Задачи оперов"])
+        rows.append(["👁 Напоминалки оперов"])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 # ─── ОНБОРДИНГ ────────────────────────────────────────────────────────────────
@@ -130,7 +112,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # Админ — сразу в меню
     if is_admin(user_id):
-        nick = get_user_nick(user_id) or "Админ"
+        nick = get_admin_nick(user_id)
         await update.message.reply_text(
             f"Привет, {nick}! 👋",
             reply_markup=main_menu_keyboard(user_id)
@@ -229,8 +211,6 @@ async def remind_add_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def remind_got_username(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     username = update.message.text.strip()
-    if not username.startswith:
-        username = + username
     ctx.user_data["remind_username"] = username
     await update.message.reply_text(
         f"Окей, {username}\n"
@@ -422,6 +402,8 @@ def rating_menu(is_admin_user):
     if is_admin_user:
         buttons.append([InlineKeyboardButton("➕ Добавить участника", callback_data="rating_add")])
         buttons.append([InlineKeyboardButton("⭐ Начислить очки", callback_data="rating_points")])
+        buttons.append([InlineKeyboardButton("✏️ Редактировать участника", callback_data="rating_edit")])
+        buttons.append([InlineKeyboardButton("🗑 Удалить участника", callback_data="rating_delete")])
     return InlineKeyboardMarkup(buttons)
 
 async def show_rating_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -457,8 +439,6 @@ async def rating_add_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def rating_add_username(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     username = update.message.text.strip()
-    if not username.startswith:
-        username = + username
     ctx.user_data["new_member_username"] = username
     await update.message.reply_text(f"Окей, {username}\nТеперь введи имя для рейтинга:")
     return RATING_ADD_NAME
@@ -535,186 +515,129 @@ async def rating_points_comment(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     conn.close()
     return ConversationHandler.END
 
-# ─── ЗАДАЧИ ОПЕРАТОРАМ (только админ) ────────────────────────────────────────
+# ─── РЕЙТИНГ: УДАЛЕНИЕ ────────────────────────────────────────────────────────
 
-async def admin_tasks_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Показывает меню задач для админа"""
-    user_id = update.effective_user.id
-    if not is_admin(user_id):
-        return
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📋 Активные задачи команды", callback_data="tasks_active")],
-        [InlineKeyboardButton("➕ Общая задача для всех", callback_data="task_new_all")],
-        [InlineKeyboardButton("👤 Задача конкретному оперу", callback_data="task_new_one")],
-    ])
-    msg = update.message or update.callback_query.message
-    await msg.reply_text("📌 <b>Задачи операторов</b>", parse_mode="HTML", reply_markup=keyboard)
-
-async def tasks_active(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Показывает активные задачи и кто принял"""
+async def rating_delete_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    user_id = update.effective_user.id
-    if not is_admin(user_id):
+    if not is_admin(update.effective_user.id):
+        await update.callback_query.message.reply_text("Нет доступа")
         return
+    user_id = update.effective_user.id
     conn = get_conn()
-    tasks = conn.execute(
-        "SELECT id, target_user_id, task_text, created_at FROM tasks ORDER BY id DESC"
+    rows = conn.execute(
+        "SELECT id, display_name, username, points FROM rating WHERE owner_id=? ORDER BY points DESC", (user_id,)
     ).fetchall()
-    if not tasks:
-        await update.callback_query.message.reply_text("Активных задач нет")
-        conn.close()
+    conn.close()
+    if not rows:
+        await update.callback_query.message.reply_text("Рейтинг пустой")
         return
-    operators = {row[0]: row[1] for row in conn.execute("SELECT user_id, nick FROM users").fetchall()}
-    lines = ["📋 <b>Активные задачи команды:</b>\n"]
-    for task_id, target_user_id, task_text, created_at in tasks:
-        if target_user_id is None:
-            target_label = "Все операторы"
-        else:
-            target_label = operators.get(target_user_id, f"id{target_user_id}")
-        confirmations = conn.execute(
-            "SELECT user_id, confirmed FROM task_confirmations WHERE task_id=?", (task_id,)
-        ).fetchall()
-        lines.append(f"🔔 <b>{task_text}</b>\n👥 Кому: {target_label}")
-        if confirmations:
-            for uid, confirmed in confirmations:
-                nick = operators.get(uid, f"id{uid}")
-                icon = "✅" if confirmed else "⏳"
-                lines.append(f"  {icon} {nick} — {'принял' if confirmed else 'не подтвердил'}")
-        else:
-            lines.append("  (никто ещё не получил или не ответил)")
-        lines.append("")
-    conn.close()
-    await update.callback_query.message.reply_text("\n".join(lines), parse_mode="HTML")
+    buttons = [
+        [InlineKeyboardButton(f"🗑 {name} ({uname}) — {pts} оч.", callback_data=f"del_rating_{rid}")]
+        for rid, name, uname, pts in rows
+    ]
+    await update.callback_query.message.reply_text("Кого удалить из рейтинга?", reply_markup=InlineKeyboardMarkup(buttons))
 
-async def task_new_all_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Начало: задача всем"""
+async def rating_delete_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     if not is_admin(update.effective_user.id):
-        return ConversationHandler.END
-    ctx.user_data["task_target"] = "all"
-    await update.callback_query.message.reply_text(
-        "✏️ Введи текст задачи для всех операторов:"
-    )
-    return TASK_TEXT
-
-async def task_new_one_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Начало: задача конкретному оперу — показываем список"""
-    await update.callback_query.answer()
-    if not is_admin(update.effective_user.id):
-        return ConversationHandler.END
-    operators = get_all_operators()
-    if not operators:
-        await update.callback_query.message.reply_text("Нет зарегистрированных операторов")
-        return ConversationHandler.END
-    buttons = [[InlineKeyboardButton(nick, callback_data=f"task_to_{uid}")] for uid, nick in operators]
-    await update.callback_query.message.reply_text(
-        "👤 Выбери оператора:", reply_markup=InlineKeyboardMarkup(buttons)
-    )
-    return TASK_TARGET
-
-async def task_got_target(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Получили выбор оператора, просим текст"""
-    await update.callback_query.answer()
-    target_id = int(update.callback_query.data.replace("task_to_", ""))
-    ctx.user_data["task_target"] = target_id
-    nick = get_user_nick(target_id) or f"id{target_id}"
-    await update.callback_query.message.reply_text(
-        f"✏️ Введи текст задачи для {nick}:"
-    )
-    return TASK_TEXT
-
-async def task_got_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Получили текст задачи — сохраняем и рассылаем"""
-    task_text = update.message.text.strip()
-    admin_id = update.effective_user.id
-    admin_nick = get_user_nick(admin_id) or "Админ"
-    target = ctx.user_data.get("task_target")
-    created_at = datetime.now(KYIV).strftime("%d.%m.%Y %H:%M")
-
-    conn = get_conn()
-
-    if target == "all":
-        # Задача всем
-        operators = get_all_operators()
-        target_db = None
-        task_id = conn.execute(
-            "INSERT INTO tasks (created_by, target_user_id, task_text, created_at) VALUES (?, ?, ?, ?)",
-            (admin_id, None, task_text, created_at)
-        ).lastrowid
-        conn.commit()
-        # Создаём строки подтверждения для каждого оператора
-        for uid, nick in operators:
-            conn.execute(
-                "INSERT INTO task_confirmations (task_id, user_id, confirmed) VALUES (?, ?, 0)",
-                (task_id, uid)
-            )
-        conn.commit()
-        recipients = operators
-        reply_text = f"✅ Задача отправлена всем операторам ({len(operators)} чел.)"
-    else:
-        # Задача конкретному
-        target_nick = get_user_nick(target) or f"id{target}"
-        task_id = conn.execute(
-            "INSERT INTO tasks (created_by, target_user_id, task_text, created_at) VALUES (?, ?, ?, ?)",
-            (admin_id, target, task_text, created_at)
-        ).lastrowid
-        conn.commit()
-        conn.execute(
-            "INSERT INTO task_confirmations (task_id, user_id, confirmed) VALUES (?, ?, 0)",
-            (task_id, target)
-        )
-        conn.commit()
-        recipients = [(target, target_nick)]
-        reply_text = f"✅ Задача отправлена оператору {target_nick}"
-
-    conn.close()
-
-    # Отправляем уведомления операторам
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Принял, сделаю", callback_data=f"task_confirm_{task_id}")]
-    ])
-    for uid, nick in recipients:
-        try:
-            await update.message.bot.send_message(
-                chat_id=uid,
-                text=f"🔔 <b>Задача от {admin_nick}</b>\n\n{task_text}",
-                parse_mode="HTML",
-                reply_markup=keyboard
-            )
-        except Exception as e:
-            logging.error(f"Не удалось отправить задачу {uid}: {e}")
-
-    await update.message.reply_text(reply_text, reply_markup=main_menu_keyboard(admin_id))
-    return ConversationHandler.END
-
-async def task_confirm_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Оператор нажал 'Принял'"""
-    await update.callback_query.answer("Принято! ✅")
+        return
+    rid = int(update.callback_query.data.replace("del_rating_", ""))
     user_id = update.effective_user.id
-    task_id = int(update.callback_query.data.replace("task_confirm_", ""))
-    confirmed_at = datetime.now(KYIV).strftime("%d.%m.%Y %H:%M")
     conn = get_conn()
-    conn.execute(
-        "UPDATE task_confirmations SET confirmed=1, confirmed_at=? WHERE task_id=? AND user_id=?",
-        (confirmed_at, task_id, user_id)
-    )
-    conn.commit()
-    # Получаем текст задачи для сообщения
-    task_row = conn.execute("SELECT task_text FROM tasks WHERE id=?", (task_id,)).fetchone()
+    row = conn.execute("SELECT display_name, username FROM rating WHERE id=? AND owner_id=?", (rid, user_id)).fetchone()
+    if row:
+        conn.execute("DELETE FROM rating WHERE id=? AND owner_id=?", (rid, user_id))
+        conn.commit()
+        await update.callback_query.message.reply_text(
+            f"✅ {row[0]} ({row[1]}) удалён из рейтинга",
+            reply_markup=main_menu_keyboard(user_id)
+        )
+    else:
+        await update.callback_query.message.reply_text("Участник не найден")
     conn.close()
-    task_text = task_row[0] if task_row else "задача"
-    nick = get_user_nick(user_id) or f"id{user_id}"
-    await update.callback_query.message.edit_text(
-        f"✅ <b>Принято!</b>\n\n{task_text}\n\n<i>Подтверждено: {confirmed_at}</i>",
+
+# ─── РЕЙТИНГ: РЕДАКТИРОВАНИЕ ──────────────────────────────────────────────────
+
+async def rating_edit_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    if not is_admin(update.effective_user.id):
+        await update.callback_query.message.reply_text("Нет доступа")
+        return ConversationHandler.END
+    user_id = update.effective_user.id
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT id, display_name, username, points FROM rating WHERE owner_id=? ORDER BY points DESC", (user_id,)
+    ).fetchall()
+    conn.close()
+    if not rows:
+        await update.callback_query.message.reply_text("Рейтинг пустой")
+        return ConversationHandler.END
+    buttons = [
+        [InlineKeyboardButton(f"✏️ {name} ({uname}) — {pts} оч.", callback_data=f"edit_rating_{rid}")]
+        for rid, name, uname, pts in rows
+    ]
+    await update.callback_query.message.reply_text("Кого редактировать?", reply_markup=InlineKeyboardMarkup(buttons))
+    return RATING_EDIT_NEW_NAME
+
+async def rating_edit_chosen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    rid = int(update.callback_query.data.replace("edit_rating_", ""))
+    ctx.user_data["edit_rating_id"] = rid
+    user_id = update.effective_user.id
+    conn = get_conn()
+    row = conn.execute("SELECT display_name, username, points FROM rating WHERE id=? AND owner_id=?", (rid, user_id)).fetchone()
+    conn.close()
+    if not row:
+        await update.callback_query.message.reply_text("Участник не найден")
+        return ConversationHandler.END
+    ctx.user_data["edit_rating_old"] = row
+    await update.callback_query.message.reply_text(
+        f"Редактирую: <b>{row[0]}</b> ({row[1]}), {row[2]} очков\n\n"
+        "Введи новое отображаемое имя (или «-» чтобы не менять):",
         parse_mode="HTML"
     )
+    return RATING_EDIT_NEW_NAME
 
-# ─── Обработка текстовых кнопок ───────────────────────────────────────────────
+async def rating_edit_new_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    new_name = update.message.text.strip()
+    old = ctx.user_data["edit_rating_old"]
+    ctx.user_data["edit_new_name"] = new_name if new_name != "-" else old[0]
+    await update.message.reply_text(
+        f"Текущие очки: {old[2]}\nВведи новое количество очков (или «-» чтобы не менять):"
+    )
+    return RATING_EDIT_NEW_POINTS
+
+async def rating_edit_new_points(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    raw = update.message.text.strip()
+    user_id = update.effective_user.id
+    rid = ctx.user_data["edit_rating_id"]
+    old = ctx.user_data["edit_rating_old"]
+    new_name = ctx.user_data["edit_new_name"]
+    if raw == "-":
+        new_points = old[2]
+    else:
+        try:
+            new_points = int(raw)
+        except ValueError:
+            await update.message.reply_text("Введи целое число или «-»")
+            return RATING_EDIT_NEW_POINTS
+    conn = get_conn()
+    conn.execute(
+        "UPDATE rating SET display_name=?, points=? WHERE id=? AND owner_id=?",
+        (new_name, new_points, rid, user_id)
+    )
+    conn.commit()
+    conn.close()
+    await update.message.reply_text(
+        f"✅ Обновлено!\nИмя: {new_name}\nОчки: {new_points}",
+        reply_markup=main_menu_keyboard(user_id)
+    )
+    return ConversationHandler.END
 
 async def handle_menu_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     # Проверяем что ник введён (кроме админа)
-    if not is_admin(user_id) and not get_user_nick(user_id):
+    if user_id != ADMIN_ID and not is_admin(user_id) and not get_user_nick(user_id):
         await update.message.reply_text("Сначала введи свой ник — напиши /start")
         return
     text = update.message.text
@@ -726,8 +649,6 @@ async def handle_menu_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await show_rating_menu(update, ctx)
     elif text == "👁 Напоминалки оперов" and is_admin(user_id):
         await admin_all_reminders(update, ctx)
-    elif text == "📌 Задачи оперов" and is_admin(user_id):
-        await admin_tasks_menu(update, ctx)
 
 # ─── Утренняя джоба ────────────────────────────────────────────────────────────
 
@@ -838,25 +759,24 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
+    rating_edit_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(rating_edit_start, pattern="^rating_edit$")],
+        states={
+            RATING_EDIT_NEW_NAME: [
+                CallbackQueryHandler(rating_edit_chosen, pattern="^edit_rating_"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, rating_edit_new_name),
+            ],
+            RATING_EDIT_NEW_POINTS: [MessageHandler(filters.TEXT & ~filters.COMMAND, rating_edit_new_points)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+
     app.add_handler(onboard_conv)
     app.add_handler(remind_conv)
     app.add_handler(plan_conv)
     app.add_handler(rating_add_conv)
     app.add_handler(rating_points_conv)
-
-    # Задачи оперов
-    task_conv = ConversationHandler(
-        entry_points=[
-            CallbackQueryHandler(task_new_all_start, pattern="^task_new_all$"),
-            CallbackQueryHandler(task_new_one_start, pattern="^task_new_one$"),
-        ],
-        states={
-            TASK_TARGET: [CallbackQueryHandler(task_got_target, pattern="^task_to_")],
-            TASK_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, task_got_text)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-    )
-    app.add_handler(task_conv)
+    app.add_handler(rating_edit_conv)
 
     app.add_handler(CallbackQueryHandler(remind_list, pattern="^remind_list$"))
     app.add_handler(CallbackQueryHandler(remind_close_start, pattern="^remind_close$"))
@@ -865,8 +785,8 @@ def main():
     app.add_handler(CallbackQueryHandler(plan_check_start, pattern="^plan_check$"))
     app.add_handler(CallbackQueryHandler(plan_check_done, pattern="^check_task_"))
     app.add_handler(CallbackQueryHandler(rating_view, pattern="^rating_view$"))
-    app.add_handler(CallbackQueryHandler(tasks_active, pattern="^tasks_active$"))
-    app.add_handler(CallbackQueryHandler(task_confirm_callback, pattern="^task_confirm_"))
+    app.add_handler(CallbackQueryHandler(rating_delete_start, pattern="^rating_delete$"))
+    app.add_handler(CallbackQueryHandler(rating_delete_confirm, pattern="^del_rating_"))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu_text))
 
