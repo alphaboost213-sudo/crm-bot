@@ -10,7 +10,7 @@ from telegram.ext import (
 )
 
 TOKEN = "8751256202:AAHNVreF9fcad96N1pP2cbNgN_8TO2YkvVw"
-KYIV = timezone(timedelta(hours=3))
+MSK = timezone(timedelta(hours=3))
 MORNING_HOUR = 9
 ADMIN_ID = 7382509664
 ADMIN_NICK = "Kurama"
@@ -28,7 +28,7 @@ logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=lo
 # ─── БД ───────────────────────────────────────────────────────────────────────
 
 def init_db():
-    conn = sqlite3.connect("/app/bot.db")
+    conn = sqlite3.connect("bot.db")
     c = conn.cursor()
     c.execute("""CREATE TABLE IF NOT EXISTS users (
         user_id INTEGER PRIMARY KEY,
@@ -60,7 +60,7 @@ def init_db():
     conn.close()
 
 def get_conn():
-    return sqlite3.connect("/app/bot.db")
+    return sqlite3.connect("bot.db")
 
 def get_user_nick(user_id):
     if user_id == ADMIN_ID:
@@ -148,7 +148,7 @@ async def admin_all_reminders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         label = nick or f"id{owner_id}"
         if label not in by_oper:
             by_oper[label] = []
-        d = format_remind_date(rdate)
+        d = datetime.strptime(rdate, "%Y-%m-%d").strftime("%d.%m.%Y")
         by_oper[label].append(f"  #{rid} {target} — {d}\n  {comment or '—'}")
 
     lines = ["👁 <b>Напоминалки оперов:</b>\n"]
@@ -160,19 +160,6 @@ async def admin_all_reminders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
 # ─── НАПОМИНАЛКИ ──────────────────────────────────────────────────────────────
-
-def format_remind_date(rdate_str):
-    """Форматирует дату из БД в читаемый вид"""
-    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d"):
-        try:
-            dt = datetime.strptime(rdate_str, fmt)
-            if " " in rdate_str:
-                return dt.strftime("%d.%m.%Y в %H:%M Киев")
-            return dt.strftime("%d.%m.%Y")
-        except ValueError:
-            pass
-    return rdate_str
-
 
 def reminders_menu():
     return InlineKeyboardMarkup([
@@ -196,38 +183,23 @@ async def remind_got_username(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         username = "@" + username
     ctx.user_data["remind_username"] = username
     await update.message.reply_text(
-        f"Окей, {username}\n"
-        "Введи дату (и время по желанию) по Киев:\n\n"
-        "Только дата: 15.07.2025\n"
-        "Дата + время: 15.07.2025 14:30"
+        f"Окей, {username}\nТеперь введи дату в формате ДД.ММ.ГГГГ\nНапример: 15.07.2025"
     )
     return REMIND_DATE
 
 async def remind_got_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     raw = update.message.text.strip()
-    remind_dt = None
-    # Пробуем с временем
-    for fmt in ("%d.%m.%Y %H:%M", "%Y-%m-%d %H:%M"):
+    remind_date = None
+    for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
         try:
-            remind_dt = datetime.strptime(raw, fmt)
+            remind_date = datetime.strptime(raw, fmt).date()
             break
         except ValueError:
             pass
-    # Пробуем только дату
-    if not remind_dt:
-        for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
-            try:
-                remind_dt = datetime.strptime(raw, fmt)
-                break
-            except ValueError:
-                pass
-    if not remind_dt:
-        await update.message.reply_text(
-            "Не понял. Введи дату в формате:\n"
-            "15.07.2025  или  15.07.2025 14:30"
-        )
+    if not remind_date:
+        await update.message.reply_text("Не понял дату. Введи в формате ДД.ММ.ГГГГ, например 15.07.2025")
         return REMIND_DATE
-    ctx.user_data["remind_dt"] = remind_dt
+    ctx.user_data["remind_date"] = remind_date
     await update.message.reply_text("Добавь комментарий (или напиши «-» если не нужен):")
     return REMIND_COMMENT
 
@@ -237,20 +209,16 @@ async def remind_got_comment(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         comment = ""
     user_id = update.effective_user.id
     username = ctx.user_data["remind_username"]
-    remind_dt = ctx.user_data["remind_dt"]
-    # Сохраняем как "YYYY-MM-DD HH:MM" или "YYYY-MM-DD"
-    has_time = remind_dt.hour != 0 or remind_dt.minute != 0
-    dt_str = remind_dt.strftime("%Y-%m-%d %H:%M") if has_time else remind_dt.strftime("%Y-%m-%d")
+    remind_date = ctx.user_data["remind_date"]
     conn = get_conn()
     conn.execute(
         "INSERT INTO reminders (owner_id, target_username, remind_date, comment) VALUES (?, ?, ?, ?)",
-        (user_id, username, dt_str, comment)
+        (user_id, username, str(remind_date), comment)
     )
     conn.commit()
     conn.close()
-    when_label = remind_dt.strftime("%d.%m.%Y в %H:%M Киев") if has_time else remind_dt.strftime("%d.%m.%Y")
     await update.message.reply_text(
-        f"✅ Сохранено!\nКого: {username}\nКогда: {when_label}\nКомментарий: {comment or '—'}",
+        f"✅ Сохранено!\nКого: {username}\nКогда: {remind_date.strftime('%d.%m.%Y')}\nКомментарий: {comment or '—'}",
         reply_markup=main_menu_keyboard(user_id)
     )
     return ConversationHandler.END
@@ -269,7 +237,7 @@ async def remind_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     lines = ["📋 <b>Активные напоминалки:</b>\n"]
     for rid, username, rdate, comment in rows:
-        d = format_remind_date(rdate)
+        d = datetime.strptime(rdate, "%Y-%m-%d").strftime("%d.%m.%Y")
         lines.append(f"#{rid} {username} — {d}\n  {comment or '—'}")
     await update.callback_query.message.reply_text("\n\n".join(lines), parse_mode="HTML")
 
@@ -287,7 +255,7 @@ async def remind_close_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     buttons = []
     for rid, username, rdate in rows:
-        d = format_remind_date(rdate)
+        d = datetime.strptime(rdate, "%Y-%m-%d").strftime("%d.%m")
         buttons.append([InlineKeyboardButton(f"#{rid} {username} {d}", callback_data=f"close_remind_{rid}")])
     await update.callback_query.message.reply_text("Выбери какую закрыть:", reply_markup=InlineKeyboardMarkup(buttons))
 
@@ -521,48 +489,31 @@ async def handle_menu_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def morning_job(context: ContextTypes.DEFAULT_TYPE):
     today = str(date.today())
     conn = get_conn()
-    now_msk = datetime.now(KYIV)
     rows = conn.execute(
-        "SELECT id, owner_id, target_username, remind_date, comment FROM reminders WHERE done=0"
+        "SELECT id, owner_id, target_username, comment FROM reminders WHERE remind_date=? AND done=0", (today,)
     ).fetchall()
-    for rid, owner_id, username, rdate, comment in rows:
+    for rid, owner_id, username, comment in rows:
         try:
-            # Если есть время — шлём только в нужный час Киев
-            if " " in rdate:
-                dt = datetime.strptime(rdate, "%Y-%m-%d %H:%M")
-                if dt.date() != now_msk.date():
-                    continue
-                if dt.hour != now_msk.hour or dt.minute > now_msk.minute:
-                    continue
-            else:
-                # Без времени — шлём утром как раньше
-                if rdate != today:
-                    continue
             msg = f"⏰ Пингани {username}"
             if comment:
                 msg += f"\n{comment}"
             await context.bot.send_message(chat_id=owner_id, text=msg)
-            # Помечаем как отправленную чтобы не дублировать
-            conn.execute("UPDATE reminders SET done=1 WHERE id=?", (rid,))
-            conn.commit()
         except Exception as e:
             logging.error(f"Напоминалка {rid}: {e}")
 
-    # Утренний план — только в 9:00 Киев
-    if now_msk.hour == MORNING_HOUR and now_msk.minute < 1:
-        plan_owners = conn.execute("SELECT DISTINCT owner_id FROM daily_plan WHERE created_date=?", (today,)).fetchall()
-        for (owner_id,) in plan_owners:
-            rows_plan = conn.execute(
-                "SELECT task FROM daily_plan WHERE owner_id=? AND created_date=? ORDER BY id", (owner_id, today)
-            ).fetchall()
-            if rows_plan:
-                lines = [f"☀️ Доброе утро! План на {datetime.today().strftime('%d.%m.%Y')}:\n"]
-                for i, (task,) in enumerate(rows_plan, 1):
-                    lines.append(f"{i}. {task}")
-                try:
-                    await context.bot.send_message(chat_id=owner_id, text="\n".join(lines))
-                except Exception as e:
-                    logging.error(f"План {owner_id}: {e}")
+    plan_owners = conn.execute("SELECT DISTINCT owner_id FROM daily_plan WHERE created_date=?", (today,)).fetchall()
+    for (owner_id,) in plan_owners:
+        rows_plan = conn.execute(
+            "SELECT task FROM daily_plan WHERE owner_id=? AND created_date=? ORDER BY id", (owner_id, today)
+        ).fetchall()
+        if rows_plan:
+            lines = [f"☀️ Доброе утро! План на {datetime.today().strftime('%d.%m.%Y')}:\n"]
+            for i, (task,) in enumerate(rows_plan, 1):
+                lines.append(f"{i}. {task}")
+            try:
+                await context.bot.send_message(chat_id=owner_id, text="\n".join(lines))
+            except Exception as e:
+                logging.error(f"План {owner_id}: {e}")
     conn.close()
 
 # ─── Отмена ────────────────────────────────────────────────────────────────────
@@ -585,7 +536,6 @@ def main():
             ONBOARD_NICK: [MessageHandler(filters.TEXT & ~filters.COMMAND, onboard_got_nick)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
-        allow_reentry=True,
     )
 
     remind_conv = ConversationHandler(
@@ -641,9 +591,7 @@ def main():
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu_text))
 
-    # Каждый час проверяем напоминалки с точным временем
-    # Утренняя рассылка плана — отдельно в 9:00
-    app.job_queue.run_repeating(morning_job, interval=60, first=10)
+    app.job_queue.run_daily(morning_job, time=dtime(hour=MORNING_HOUR, minute=0, tzinfo=MSK))
 
     print("Бот запущен")
     app.run_polling(drop_pending_updates=True)
