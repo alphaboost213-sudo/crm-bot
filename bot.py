@@ -229,7 +229,7 @@ async def remind_add_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     keyboard = InlineKeyboardMarkup([[back_button("back_to_reminders")]])
     await update.callback_query.message.reply_text(
-        "Введи имя клиента:\n\n/cancel — отмена",
+        "Введи имя клиента:",
         reply_markup=keyboard
     )
     return REMIND_USERNAME
@@ -242,8 +242,7 @@ async def remind_got_username(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"Окей, {username}\n"
         "Введи дату (и время по желанию) по Киев:\n\n"
         "Только дата: 15.07.2025\n"
-        "Дата + время: 15.07.2025 14:30\n\n"
-        "/cancel — отмена",
+        "Дата + время: 15.07.2025 14:30",
         reply_markup=keyboard
     )
     return REMIND_DATE
@@ -267,14 +266,13 @@ async def remind_got_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not remind_dt:
         await update.message.reply_text(
             "Не понял. Введи дату в формате:\n"
-            "15.07.2025  или  15.07.2025 14:30\n\n"
-            "/cancel — отмена",
+            "15.07.2025  или  15.07.2025 14:30",
             reply_markup=InlineKeyboardMarkup([[back_button("back_to_reminders")]])
         )
         return REMIND_DATE
     ctx.user_data["remind_dt"] = remind_dt
     await update.message.reply_text(
-        "Добавь комментарий (или напиши «-» если не нужен):\n\n/cancel — отмена",
+        "Добавь комментарий (или напиши «-» если не нужен):",
         reply_markup=InlineKeyboardMarkup([[back_button("back_to_reminders")]])
     )
     return REMIND_COMMENT
@@ -369,7 +367,7 @@ async def plan_set_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     keyboard = InlineKeyboardMarkup([[back_button("back_to_plan")]])
     await update.callback_query.message.reply_text(
-        "Введи задачи — каждую с новой строки или через запятую:\n\nНапример:\nСобрать базу\nОтветить на долёты\nОбзвон\n\n/cancel — отмена",
+        "Введи задачи — каждую с новой строки или через запятую:\n\nНапример:\nСобрать базу\nОтветить на долёты\nОбзвон",
         reply_markup=keyboard
     )
     return PLAN_TASKS
@@ -447,9 +445,31 @@ def rating_menu(is_admin_user):
     return InlineKeyboardMarkup(buttons)
 
 async def show_rating_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    msg = update.message or update.callback_query.message
     user_id = update.effective_user.id
-    await msg.reply_text("🏆 <b>Рейтинг команды</b>", parse_mode="HTML", reply_markup=rating_menu(is_admin(user_id)))
+    msg = update.message or update.callback_query.message
+
+    # Обычный оператор — сразу показываем рейтинг, без доп кнопок
+    if not is_admin(user_id):
+        conn = get_conn()
+        # Рейтинг общий — берём записи всех владельцев (всех админов)
+        rows = conn.execute(
+            "SELECT display_name, username, points FROM rating ORDER BY points DESC"
+        ).fetchall()
+        conn.close()
+        kb = InlineKeyboardMarkup([[back_button("back_to_menu")]])
+        if not rows:
+            await msg.reply_text("🏆 Рейтинг пуст", reply_markup=kb)
+            return
+        medals = ["🥇", "🥈", "🥉"]
+        lines = ["🏆 <b>Рейтинг команды:</b>\n"]
+        for i, (name, username, points) in enumerate(rows):
+            medal = medals[i] if i < 3 else f"{i+1}."
+            lines.append(f"{medal} {name} ({username}) — {points} очков")
+        await msg.reply_text("\n".join(lines), parse_mode="HTML", reply_markup=kb)
+        return
+
+    # Админ — показываем меню управления рейтингом
+    await msg.reply_text("🏆 <b>Рейтинг команды</b>", parse_mode="HTML", reply_markup=rating_menu(True))
 
 async def rating_view(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
@@ -477,7 +497,7 @@ async def rating_add_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     keyboard = InlineKeyboardMarkup([[back_button("back_to_rating")]])
     await update.callback_query.message.reply_text(
-        "Введи имя участника (никнейм):\n\n/cancel — отмена",
+        "Введи имя участника (никнейм):",
         reply_markup=keyboard
     )
     return RATING_ADD_USERNAME
@@ -487,7 +507,7 @@ async def rating_add_username(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["new_member_username"] = username
     keyboard = InlineKeyboardMarkup([[back_button("back_to_rating")]])
     await update.message.reply_text(
-        f"Окей, {username}\nТеперь введи отображаемое имя для рейтинга:\n\n/cancel — отмена",
+        f"Окей, {username}\nТеперь введи отображаемое имя для рейтинга:",
         reply_markup=keyboard
     )
     return RATING_ADD_NAME
@@ -543,7 +563,7 @@ async def rating_points_delta(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     ctx.user_data["pts_delta"] = int(update.callback_query.data.replace("pts_delta_", ""))
     await update.callback_query.message.reply_text(
-        "Добавь комментарий (или напиши «-»):\n\n/cancel — отмена",
+        "Добавь комментарий (или напиши «-»):",
         reply_markup=InlineKeyboardMarkup([[back_button("back_to_rating")]])
     )
     return RATING_POINTS_COMMENT
@@ -650,7 +670,7 @@ async def rating_edit_chosen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     keyboard = InlineKeyboardMarkup([[back_button("back_to_rating")]])
     await update.callback_query.message.reply_text(
         f"Редактирую: <b>{row[0]}</b> ({row[1]}), {row[2]} очков\n\n"
-        "Введи новое отображаемое имя (или «-» чтобы не менять):\n\n/cancel — отмена",
+        "Введи новое отображаемое имя (или «-» чтобы не менять):",
         parse_mode="HTML",
         reply_markup=keyboard
     )
@@ -662,7 +682,7 @@ async def rating_edit_new_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["edit_new_name"] = new_name if new_name != "-" else old[0]
     keyboard = InlineKeyboardMarkup([[back_button("back_to_rating")]])
     await update.message.reply_text(
-        f"Текущие очки: {old[2]}\nВведи новое количество очков (или «-» чтобы не менять):\n\n/cancel — отмена",
+        f"Текущие очки: {old[2]}\nВведи новое количество очков (или «-» чтобы не менять):",
         reply_markup=keyboard
     )
     return RATING_EDIT_NEW_POINTS
@@ -679,7 +699,7 @@ async def rating_edit_new_points(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
         try:
             new_points = int(raw)
         except ValueError:
-            await update.message.reply_text("Введи целое число или «-»\n\n/cancel — отмена")
+            await update.message.reply_text("Введи целое число или «-»")
             return RATING_EDIT_NEW_POINTS
     conn = get_conn()
     conn.execute(
@@ -774,7 +794,7 @@ async def task_new_all_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["task_target"] = "all"
     keyboard = InlineKeyboardMarkup([[back_button("back_to_tasks")]])
     await update.callback_query.message.reply_text(
-        "✏️ Введи текст задачи для всех операторов:\n\n/cancel — отмена",
+        "✏️ Введи текст задачи для всех операторов:",
         reply_markup=keyboard
     )
     return TASK_TEXT
@@ -801,7 +821,7 @@ async def task_got_target(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     nick = get_user_nick(target_id) or f"id{target_id}"
     keyboard = InlineKeyboardMarkup([[back_button("back_to_tasks")]])
     await update.callback_query.message.reply_text(
-        f"✏️ Введи текст задачи для {nick}:\n\n/cancel — отмена",
+        f"✏️ Введи текст задачи для {nick}:",
         reply_markup=keyboard
     )
     return TASK_TEXT
