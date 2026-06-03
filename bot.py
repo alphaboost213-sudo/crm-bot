@@ -1,116 +1,151 @@
 import logging
 import sqlite3
-import asyncio
-from datetime import datetime, date
+from datetime import datetime, date, time as dtime, timezone, timedelta
 import re
 
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
-    Application, CommandHandler, MessageHandler,
-    filters, ContextTypes, JobQueue
+    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
+    ConversationHandler, filters, ContextTypes
 )
 
 TOKEN = "8751256202:AAHNVreF9fcad96N1pP2cbNgN_8TO2YkvVw"
-MORNING_HOUR = 9  # Время утренней рассылки плана (МСК)
+MSK = timezone(timedelta(hours=3))
+MORNING_HOUR = 9
 
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
-)
+logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 
-# ─── База данных ───────────────────────────────────────────────────────────────
+# Состояния диалогов
+(
+    REMIND_USERNAME, REMIND_DATE, REMIND_COMMENT,
+    PLAN_TASKS,
+    RATING_ADD_USERNAME, RATING_ADD_NAME,
+    RATING_POINTS_WHO, RATING_POINTS_DELTA, RATING_POINTS_COMMENT,
+    TASK_DONE_SELECT
+) = range(10)
+
+# ─── БД ───────────────────────────────────────────────────────────────────────
 
 def init_db():
     conn = sqlite3.connect("bot.db")
     c = conn.cursor()
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS reminders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            owner_id INTEGER NOT NULL,
-            target_username TEXT NOT NULL,
-            remind_date TEXT NOT NULL,
-            comment TEXT,
-            done INTEGER DEFAULT 0
-        )
-    """)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS daily_plan (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            owner_id INTEGER NOT NULL,
-            task TEXT NOT NULL,
-            done INTEGER DEFAULT 0,
-            created_date TEXT NOT NULL
-        )
-    """)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS rating (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            owner_id INTEGER NOT NULL,
-            username TEXT NOT NULL,
-            display_name TEXT NOT NULL,
-            points INTEGER DEFAULT 0
-        )
-    """)
+    c.execute("""CREATE TABLE IF NOT EXISTS reminders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        owner_id INTEGER NOT NULL,
+        target_username TEXT NOT NULL,
+        remind_date TEXT NOT NULL,
+        comment TEXT,
+        done INTEGER DEFAULT 0
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS daily_plan (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        owner_id INTEGER NOT NULL,
+        task TEXT NOT NULL,
+        done INTEGER DEFAULT 0,
+        created_date TEXT NOT NULL
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS rating (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        owner_id INTEGER NOT NULL,
+        username TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        points INTEGER DEFAULT 0
+    )""")
     conn.commit()
     conn.close()
-
 
 def get_conn():
     return sqlite3.connect("bot.db")
 
-# ─── Напоминалки ───────────────────────────────────────────────────────────────
+# ─── Главное меню ──────────────────────────────────────────────────────────────
 
-async def cmd_remind(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """
-    /remind @username YYYY-MM-DD комментарий
-    /remind @username DD.MM.YYYY комментарий
-    """
-    user_id = update.effective_user.id
-    text = update.message.text.strip()
+def main_menu_keyboard():
+    return ReplyKeyboardMarkup([
+        ["⏰ Напоминалки", "📅 План дня"],
+        ["🏆 Рейтинг команды"]
+    ], resize_keyboard=True)
 
-    # Парсим
-    pattern = r"/remind\s+(@\S+)\s+(\S+)\s*(.*)"
-    m = re.match(pattern, text)
-    if not m:
-        await update.message.reply_text(
-            "Формат: /remind @username 2025-07-15 комментарий\n"
-            "или: /remind @username 15.07.2025 комментарий"
-        )
-        return
+async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Привет! Выбери раздел 👇",
+        reply_markup=main_menu_keyboard()
+    )
 
-    target, raw_date, comment = m.group(1), m.group(2), m.group(3).strip()
+# ─── НАПОМИНАЛКИ ──────────────────────────────────────────────────────────────
 
-    # Парсим дату
+def reminders_menu():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ Добавить напоминалку", callback_data="remind_add")],
+        [InlineKeyboardButton("📋 Список активных", callback_data="remind_list")],
+        [InlineKeyboardButton("✅ Закрыть напоминалку", callback_data="remind_close")],
+    ])
+
+async def show_reminders_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    msg = update.message or update.callback_query.message
+    await msg.reply_text("⏰ <b>Напоминалки</b>", parse_mode="HTML", reply_markup=reminders_menu())
+
+# Добавить напоминалку - шаг 1
+async def remind_add_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    await update.callback_query.message.reply_text(
+        "Введи username клиента (с @ или без):"
+    )
+    return REMIND_USERNAME
+
+async def remind_got_username(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    username = update.message.text.strip()
+    if not username.startswith("@"):
+        username = "@" + username
+    ctx.user_data["remind_username"] = username
+    await update.message.reply_text(
+        f"Окей, {username}\nТеперь введи дату в формате ДД.ММ.ГГГГ\nНапример: 15.07.2025"
+    )
+    return REMIND_DATE
+
+async def remind_got_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    raw = update.message.text.strip()
     remind_date = None
-    for fmt in ("%Y-%m-%d", "%d.%m.%Y"):
+    for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
         try:
-            remind_date = datetime.strptime(raw_date, fmt).date()
+            remind_date = datetime.strptime(raw, fmt).date()
             break
         except ValueError:
             pass
-
     if not remind_date:
-        await update.message.reply_text("Дата не распознана. Используй 2025-07-15 или 15.07.2025")
-        return
+        await update.message.reply_text("Не понял дату. Введи в формате ДД.ММ.ГГГГ, например 15.07.2025")
+        return REMIND_DATE
+    ctx.user_data["remind_date"] = remind_date
+    await update.message.reply_text("Добавь комментарий (или напиши «-» если не нужен):")
+    return REMIND_COMMENT
+
+async def remind_got_comment(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    comment = update.message.text.strip()
+    if comment == "-":
+        comment = ""
+    user_id = update.effective_user.id
+    username = ctx.user_data["remind_username"]
+    remind_date = ctx.user_data["remind_date"]
 
     conn = get_conn()
     conn.execute(
         "INSERT INTO reminders (owner_id, target_username, remind_date, comment) VALUES (?, ?, ?, ?)",
-        (user_id, target, str(remind_date), comment)
+        (user_id, username, str(remind_date), comment)
     )
     conn.commit()
     conn.close()
 
     await update.message.reply_text(
-        f"Запомнил ✓\n"
-        f"Кого: {target}\n"
+        f"✅ Сохранено!\n"
+        f"Кого: {username}\n"
         f"Когда: {remind_date.strftime('%d.%m.%Y')}\n"
-        f"Комментарий: {comment or '—'}"
+        f"Комментарий: {comment or '—'}",
+        reply_markup=main_menu_keyboard()
     )
+    return ConversationHandler.END
 
-
-async def cmd_reminders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Список активных напоминалок"""
+# Список напоминалок
+async def remind_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
     user_id = update.effective_user.id
     conn = get_conn()
     rows = conn.execute(
@@ -120,56 +155,84 @@ async def cmd_reminders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     conn.close()
 
     if not rows:
-        await update.message.reply_text("Активных напоминалок нет")
+        await update.callback_query.message.reply_text("Активных напоминалок нет")
         return
 
     lines = ["📋 <b>Активные напоминалки:</b>\n"]
-    for r in rows:
-        rid, username, rdate, comment = r
+    for rid, username, rdate, comment in rows:
         d = datetime.strptime(rdate, "%Y-%m-%d").strftime("%d.%m.%Y")
-        lines.append(f"#{rid} {username} — {d}\n    {comment or '—'}")
+        lines.append(f"#{rid} {username} — {d}\n  {comment or '—'}")
+    await update.callback_query.message.reply_text("\n\n".join(lines), parse_mode="HTML")
 
-    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
-
-
-async def cmd_done_remind(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """
-    /done_remind 5  - закрыть напоминалку по ID
-    """
+# Закрыть напоминалку
+async def remind_close_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
     user_id = update.effective_user.id
-    args = ctx.args
-    if not args or not args[0].isdigit():
-        await update.message.reply_text("Использование: /done_remind <id>")
-        return
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT id, target_username, remind_date, comment FROM reminders WHERE owner_id=? AND done=0 ORDER BY remind_date",
+        (user_id,)
+    ).fetchall()
+    conn.close()
 
-    rid = int(args[0])
+    if not rows:
+        await update.callback_query.message.reply_text("Нечего закрывать, активных напоминалок нет")
+        return ConversationHandler.END
+
+    buttons = []
+    for rid, username, rdate, comment in rows:
+        d = datetime.strptime(rdate, "%Y-%m-%d").strftime("%d.%m")
+        label = f"#{rid} {username} {d}"
+        buttons.append([InlineKeyboardButton(label, callback_data=f"close_remind_{rid}")])
+
+    await update.callback_query.message.reply_text(
+        "Выбери какую закрыть:",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+async def remind_close_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    rid = int(update.callback_query.data.replace("close_remind_", ""))
+    user_id = update.effective_user.id
     conn = get_conn()
     conn.execute("UPDATE reminders SET done=1 WHERE id=? AND owner_id=?", (rid, user_id))
     conn.commit()
     conn.close()
-    await update.message.reply_text(f"Напоминалка #{rid} закрыта ✓")
+    await update.callback_query.message.reply_text(f"✅ Напоминалка #{rid} закрыта", reply_markup=main_menu_keyboard())
 
-# ─── План дня ──────────────────────────────────────────────────────────────────
+# ─── ПЛАН ДНЯ ─────────────────────────────────────────────────────────────────
 
-async def cmd_plan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """
-    /plan задача1 | задача2 | задача3
-    Устанавливает план на сегодня
-    """
+def plan_menu():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✏️ Задать план на сегодня", callback_data="plan_set")],
+        [InlineKeyboardButton("📋 Посмотреть план", callback_data="plan_view")],
+        [InlineKeyboardButton("✅ Отметить выполненное", callback_data="plan_check")],
+    ])
+
+async def show_plan_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    msg = update.message or update.callback_query.message
+    await msg.reply_text("📅 <b>План дня</b>", parse_mode="HTML", reply_markup=plan_menu())
+
+async def plan_set_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    await update.callback_query.message.reply_text(
+        "Введи задачи через запятую или каждую с новой строки:\n\n"
+        "Например:\nСобрать базу\nОтветить на долёты\nОбзвон"
+    )
+    return PLAN_TASKS
+
+async def plan_got_tasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    # Разбиваем по запятой или новой строке
+    if "\n" in text:
+        tasks = [t.strip() for t in text.split("\n") if t.strip()]
+    else:
+        tasks = [t.strip() for t in text.split(",") if t.strip()]
+
     user_id = update.effective_user.id
-    text = update.message.text.replace("/plan", "", 1).strip()
-
-    if not text:
-        await update.message.reply_text(
-            "Задай план:\n/plan Собрать базу | Ответить на долёты | Обзвон"
-        )
-        return
-
-    tasks = [t.strip() for t in text.split("|") if t.strip()]
     today = str(date.today())
 
     conn = get_conn()
-    # Удаляем старый план на сегодня
     conn.execute("DELETE FROM daily_plan WHERE owner_id=? AND created_date=?", (user_id, today))
     for task in tasks:
         conn.execute(
@@ -179,15 +242,14 @@ async def cmd_plan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     conn.commit()
     conn.close()
 
-    lines = [f"✅ План на сегодня сохранён:\n"]
+    lines = ["✅ <b>План на сегодня сохранён:</b>\n"]
     for i, t in enumerate(tasks, 1):
         lines.append(f"{i}. {t}")
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML", reply_markup=main_menu_keyboard())
+    return ConversationHandler.END
 
-    await update.message.reply_text("\n".join(lines))
-
-
-async def cmd_today(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Показать план на сегодня"""
+async def plan_view(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
     user_id = update.effective_user.id
     today = str(date.today())
     conn = get_conn()
@@ -198,118 +260,64 @@ async def cmd_today(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     conn.close()
 
     if not rows:
-        await update.message.reply_text("План на сегодня не задан. Используй /plan")
+        await update.callback_query.message.reply_text("План на сегодня не задан")
         return
 
     lines = [f"📅 <b>План на {datetime.today().strftime('%d.%m.%Y')}:</b>\n"]
-    for rid, task, done in rows:
+    for _, task, done in rows:
         mark = "✅" if done else "⬜"
         lines.append(f"{mark} {task}")
+    await update.callback_query.message.reply_text("\n".join(lines), parse_mode="HTML")
 
-    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
-
-
-async def cmd_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """
-    /check 1 2 3  - отметить задачи выполненными по номеру
-    """
+async def plan_check_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
     user_id = update.effective_user.id
     today = str(date.today())
-    args = ctx.args
-
-    if not args:
-        await update.message.reply_text("Использование: /check 1 2 3")
-        return
-
     conn = get_conn()
     rows = conn.execute(
-        "SELECT id FROM daily_plan WHERE owner_id=? AND created_date=? ORDER BY id",
+        "SELECT id, task, done FROM daily_plan WHERE owner_id=? AND created_date=? ORDER BY id",
         (user_id, today)
     ).fetchall()
-
-    ids = [r[0] for r in rows]
-    for arg in args:
-        if arg.isdigit():
-            idx = int(arg) - 1
-            if 0 <= idx < len(ids):
-                conn.execute("UPDATE daily_plan SET done=1 WHERE id=?", (ids[idx],))
-
-    conn.commit()
-    conn.close()
-    await cmd_today(update, ctx)
-
-# ─── Рейтинг ───────────────────────────────────────────────────────────────────
-
-async def cmd_add_member(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """
-    /add_member @username Имя - добавить участника в рейтинг
-    """
-    user_id = update.effective_user.id
-    text = update.message.text.strip()
-    pattern = r"/add_member\s+(@\S+)\s+(.*)"
-    m = re.match(pattern, text)
-    if not m:
-        await update.message.reply_text("Использование: /add_member @username Имя Фамилия")
-        return
-
-    username, display_name = m.group(1), m.group(2).strip()
-    conn = get_conn()
-    existing = conn.execute(
-        "SELECT id FROM rating WHERE owner_id=? AND username=?", (user_id, username)
-    ).fetchone()
-
-    if existing:
-        await update.message.reply_text(f"{username} уже есть в рейтинге")
-    else:
-        conn.execute(
-            "INSERT INTO rating (owner_id, username, display_name, points) VALUES (?, ?, ?, 0)",
-            (user_id, username, display_name)
-        )
-        conn.commit()
-        await update.message.reply_text(f"Добавлен: {display_name} ({username})")
-
     conn.close()
 
-
-async def cmd_points(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """
-    /points @username +5 комментарий
-    /points @username -3 комментарий
-    """
-    user_id = update.effective_user.id
-    text = update.message.text.strip()
-    pattern = r"/points\s+(@\S+)\s+([+-]?\d+)\s*(.*)"
-    m = re.match(pattern, text)
-    if not m:
-        await update.message.reply_text("Использование: /points @username +5 закрыл сделку")
+    undone = [(rid, task) for rid, task, done in rows if not done]
+    if not undone:
+        await update.callback_query.message.reply_text("Все задачи уже выполнены 🎉")
         return
 
-    username, delta, comment = m.group(1), int(m.group(2)), m.group(3).strip()
-    conn = get_conn()
-    existing = conn.execute(
-        "SELECT id, points FROM rating WHERE owner_id=? AND username=?", (user_id, username)
-    ).fetchone()
+    buttons = []
+    for rid, task in undone:
+        buttons.append([InlineKeyboardButton(f"✅ {task}", callback_data=f"check_task_{rid}")])
 
-    if not existing:
-        await update.message.reply_text(f"{username} не найден. Сначала /add_member")
-        conn.close()
-        return
-
-    new_points = existing[1] + delta
-    conn.execute("UPDATE rating SET points=? WHERE id=?", (new_points, existing[0]))
-    conn.commit()
-    conn.close()
-
-    sign = "+" if delta > 0 else ""
-    await update.message.reply_text(
-        f"{username}: {sign}{delta} очков\n"
-        f"Итого: {new_points} очков\n"
-        f"{comment or ''}"
+    await update.callback_query.message.reply_text(
+        "Нажми на задачу чтобы отметить выполненной:",
+        reply_markup=InlineKeyboardMarkup(buttons)
     )
 
+async def plan_check_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    rid = int(update.callback_query.data.replace("check_task_", ""))
+    conn = get_conn()
+    conn.execute("UPDATE daily_plan SET done=1 WHERE id=?", (rid,))
+    conn.commit()
+    conn.close()
+    await update.callback_query.message.reply_text("✅ Отмечено!", reply_markup=main_menu_keyboard())
 
-async def cmd_rating(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Показать рейтинг команды"""
+# ─── РЕЙТИНГ ──────────────────────────────────────────────────────────────────
+
+def rating_menu():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏆 Посмотреть рейтинг", callback_data="rating_view")],
+        [InlineKeyboardButton("➕ Добавить участника", callback_data="rating_add")],
+        [InlineKeyboardButton("⭐ Начислить очки", callback_data="rating_points")],
+    ])
+
+async def show_rating_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    msg = update.message or update.callback_query.message
+    await msg.reply_text("🏆 <b>Рейтинг команды</b>", parse_mode="HTML", reply_markup=rating_menu())
+
+async def rating_view(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
     user_id = update.effective_user.id
     conn = get_conn()
     rows = conn.execute(
@@ -319,7 +327,7 @@ async def cmd_rating(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     conn.close()
 
     if not rows:
-        await update.message.reply_text("Рейтинг пустой. Добавь участников через /add_member")
+        await update.callback_query.message.reply_text("Рейтинг пустой. Сначала добавь участников")
         return
 
     lines = ["🏆 <b>Рейтинг команды:</b>\n"]
@@ -327,19 +335,145 @@ async def cmd_rating(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     for i, (name, username, points) in enumerate(rows):
         medal = medals[i] if i < 3 else f"{i+1}."
         lines.append(f"{medal} {name} ({username}) — {points} очков")
+    await update.callback_query.message.reply_text("\n".join(lines), parse_mode="HTML")
 
-    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+async def rating_add_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    await update.callback_query.message.reply_text("Введи username участника (с @ или без):")
+    return RATING_ADD_USERNAME
 
-# ─── Джоба: проверка напоминалок каждые утро ───────────────────────────────────
+async def rating_add_username(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    username = update.message.text.strip()
+    if not username.startswith("@"):
+        username = "@" + username
+    ctx.user_data["new_member_username"] = username
+    await update.message.reply_text(f"Окей, {username}\nТеперь введи имя как его показывать в рейтинге:")
+    return RATING_ADD_NAME
+
+async def rating_add_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    display_name = update.message.text.strip()
+    username = ctx.user_data["new_member_username"]
+    user_id = update.effective_user.id
+
+    conn = get_conn()
+    existing = conn.execute(
+        "SELECT id FROM rating WHERE owner_id=? AND username=?", (user_id, username)
+    ).fetchone()
+
+    if existing:
+        await update.message.reply_text(f"{username} уже есть в рейтинге", reply_markup=main_menu_keyboard())
+    else:
+        conn.execute(
+            "INSERT INTO rating (owner_id, username, display_name, points) VALUES (?, ?, ?, 0)",
+            (user_id, username, display_name)
+        )
+        conn.commit()
+        await update.message.reply_text(f"✅ Добавлен: {display_name} ({username})", reply_markup=main_menu_keyboard())
+    conn.close()
+    return ConversationHandler.END
+
+async def rating_points_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    user_id = update.effective_user.id
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT username, display_name, points FROM rating WHERE owner_id=? ORDER BY points DESC",
+        (user_id,)
+    ).fetchall()
+    conn.close()
+
+    if not rows:
+        await update.callback_query.message.reply_text("Сначала добавь участников")
+        return ConversationHandler.END
+
+    buttons = []
+    for username, display_name, points in rows:
+        buttons.append([InlineKeyboardButton(
+            f"{display_name} ({points} оч.)", callback_data=f"pts_who_{username}"
+        )])
+
+    await update.callback_query.message.reply_text(
+        "Кому начислить очки?",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+    return RATING_POINTS_WHO
+
+async def rating_points_who(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    username = update.callback_query.data.replace("pts_who_", "")
+    ctx.user_data["pts_username"] = username
+
+    buttons = InlineKeyboardMarkup([
+        [InlineKeyboardButton("+1", callback_data="pts_delta_+1"),
+         InlineKeyboardButton("+3", callback_data="pts_delta_+3"),
+         InlineKeyboardButton("+5", callback_data="pts_delta_+5"),
+         InlineKeyboardButton("+10", callback_data="pts_delta_+10")],
+        [InlineKeyboardButton("-1", callback_data="pts_delta_-1"),
+         InlineKeyboardButton("-3", callback_data="pts_delta_-3"),
+         InlineKeyboardButton("-5", callback_data="pts_delta_-5")],
+    ])
+    await update.callback_query.message.reply_text(
+        f"Сколько очков для {username}?",
+        reply_markup=buttons
+    )
+    return RATING_POINTS_DELTA
+
+async def rating_points_delta(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    delta_str = update.callback_query.data.replace("pts_delta_", "")
+    delta = int(delta_str)
+    ctx.user_data["pts_delta"] = delta
+
+    await update.callback_query.message.reply_text(
+        "Добавь комментарий (или напиши «-»):"
+    )
+    return RATING_POINTS_COMMENT
+
+async def rating_points_comment(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    comment = update.message.text.strip()
+    if comment == "-":
+        comment = ""
+    username = ctx.user_data["pts_username"]
+    delta = ctx.user_data["pts_delta"]
+    user_id = update.effective_user.id
+
+    conn = get_conn()
+    existing = conn.execute(
+        "SELECT id, points FROM rating WHERE owner_id=? AND username=?", (user_id, username)
+    ).fetchone()
+    if existing:
+        new_points = existing[1] + delta
+        conn.execute("UPDATE rating SET points=? WHERE id=?", (new_points, existing[0]))
+        conn.commit()
+        sign = "+" if delta > 0 else ""
+        await update.message.reply_text(
+            f"✅ {username}: {sign}{delta} очков\nИтого: {new_points}\n{comment}",
+            reply_markup=main_menu_keyboard()
+        )
+    conn.close()
+    return ConversationHandler.END
+
+# ─── Обработка текстовых кнопок главного меню ─────────────────────────────────
+
+async def handle_menu_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    if text == "⏰ Напоминалки":
+        await show_reminders_menu(update, ctx)
+    elif text == "📅 План дня":
+        await show_plan_menu(update, ctx)
+    elif text == "🏆 Рейтинг команды":
+        await show_rating_menu(update, ctx)
+
+# ─── Утренняя джоба ────────────────────────────────────────────────────────────
 
 async def morning_job(context: ContextTypes.DEFAULT_TYPE):
     today = str(date.today())
     conn = get_conn()
+
     rows = conn.execute(
         "SELECT id, owner_id, target_username, comment FROM reminders WHERE remind_date=? AND done=0",
         (today,)
     ).fetchall()
-
     for rid, owner_id, username, comment in rows:
         try:
             msg = f"⏰ Пингани {username}"
@@ -347,13 +481,11 @@ async def morning_job(context: ContextTypes.DEFAULT_TYPE):
                 msg += f"\n{comment}"
             await context.bot.send_message(chat_id=owner_id, text=msg)
         except Exception as e:
-            logging.error(f"Не удалось отправить напоминалку {rid}: {e}")
+            logging.error(f"Напоминалка {rid}: {e}")
 
-    # Отправляем план дня тем у кого он есть
     plan_owners = conn.execute(
         "SELECT DISTINCT owner_id FROM daily_plan WHERE created_date=?", (today,)
     ).fetchall()
-
     for (owner_id,) in plan_owners:
         rows_plan = conn.execute(
             "SELECT task FROM daily_plan WHERE owner_id=? AND created_date=? ORDER BY id",
@@ -366,60 +498,89 @@ async def morning_job(context: ContextTypes.DEFAULT_TYPE):
             try:
                 await context.bot.send_message(chat_id=owner_id, text="\n".join(lines))
             except Exception as e:
-                logging.error(f"Не удалось отправить план {owner_id}: {e}")
+                logging.error(f"План {owner_id}: {e}")
 
     conn.close()
 
-# ─── /help ─────────────────────────────────────────────────────────────────────
+# ─── Отмена диалога ────────────────────────────────────────────────────────────
 
-async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    text = """<b>Команды бота:</b>
+async def cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Отменено", reply_markup=main_menu_keyboard())
+    return ConversationHandler.END
 
-<b>Напоминалки:</b>
-/remind @username 15.07.2025 комментарий
-/reminders — список активных
-/done_remind 5 — закрыть напоминалку #5
-
-<b>План дня:</b>
-/plan Задача 1 | Задача 2 | Задача 3
-/today — посмотреть план
-/check 1 3 — отметить задачи 1 и 3 выполненными
-
-<b>Рейтинг:</b>
-/add_member @username Имя — добавить участника
-/points @username +5 комментарий — начислить очки
-/rating — показать таблицу
-
-Утром в 9:00 бот сам присылает план и напоминалки на сегодня."""
-    await update.message.reply_text(text, parse_mode="HTML")
-
-# ─── Старт ─────────────────────────────────────────────────────────────────────
+# ─── Запуск ────────────────────────────────────────────────────────────────────
 
 def main():
     init_db()
     app = Application.builder().token(TOKEN).build()
 
-    app.add_handler(CommandHandler("start", cmd_help))
-    app.add_handler(CommandHandler("help", cmd_help))
-    app.add_handler(CommandHandler("remind", cmd_remind))
-    app.add_handler(CommandHandler("reminders", cmd_reminders))
-    app.add_handler(CommandHandler("done_remind", cmd_done_remind))
-    app.add_handler(CommandHandler("plan", cmd_plan))
-    app.add_handler(CommandHandler("today", cmd_today))
-    app.add_handler(CommandHandler("check", cmd_check))
-    app.add_handler(CommandHandler("add_member", cmd_add_member))
-    app.add_handler(CommandHandler("points", cmd_points))
-    app.add_handler(CommandHandler("rating", cmd_rating))
+    # Диалог: добавить напоминалку
+    remind_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(remind_add_start, pattern="^remind_add$")],
+        states={
+            REMIND_USERNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, remind_got_username)],
+            REMIND_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, remind_got_date)],
+            REMIND_COMMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, remind_got_comment)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
 
-    # Джоба каждый день в 9:00
+    # Диалог: план дня
+    plan_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(plan_set_start, pattern="^plan_set$")],
+        states={
+            PLAN_TASKS: [MessageHandler(filters.TEXT & ~filters.COMMAND, plan_got_tasks)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+
+    # Диалог: добавить участника рейтинга
+    rating_add_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(rating_add_start, pattern="^rating_add$")],
+        states={
+            RATING_ADD_USERNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, rating_add_username)],
+            RATING_ADD_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, rating_add_name)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+
+    # Диалог: начислить очки
+    rating_points_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(rating_points_start, pattern="^rating_points$")],
+        states={
+            RATING_POINTS_WHO: [CallbackQueryHandler(rating_points_who, pattern="^pts_who_")],
+            RATING_POINTS_DELTA: [CallbackQueryHandler(rating_points_delta, pattern="^pts_delta_")],
+            RATING_POINTS_COMMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, rating_points_comment)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(remind_conv)
+    app.add_handler(plan_conv)
+    app.add_handler(rating_add_conv)
+    app.add_handler(rating_points_conv)
+
+    # Inline кнопки
+    app.add_handler(CallbackQueryHandler(remind_list, pattern="^remind_list$"))
+    app.add_handler(CallbackQueryHandler(remind_close_start, pattern="^remind_close$"))
+    app.add_handler(CallbackQueryHandler(remind_close_done, pattern="^close_remind_"))
+    app.add_handler(CallbackQueryHandler(plan_view, pattern="^plan_view$"))
+    app.add_handler(CallbackQueryHandler(plan_check_start, pattern="^plan_check$"))
+    app.add_handler(CallbackQueryHandler(plan_check_done, pattern="^check_task_"))
+    app.add_handler(CallbackQueryHandler(rating_view, pattern="^rating_view$"))
+
+    # Текстовые кнопки меню
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu_text))
+
+    # Утренняя джоба в 9:00 МСК
     app.job_queue.run_daily(
         morning_job,
-        time=datetime.strptime(f"{MORNING_HOUR}:00", "%H:%M").time()
+        time=dtime(hour=MORNING_HOUR, minute=0, tzinfo=MSK)
     )
 
     print("Бот запущен")
     app.run_polling(drop_pending_updates=True)
-
 
 if __name__ == "__main__":
     main()
