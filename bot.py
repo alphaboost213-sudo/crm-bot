@@ -93,7 +93,7 @@ def get_conn():
     return sqlite3.connect("/app/data/bot.db")
 
 def get_user_nick(user_id):
-    if user_id == ADMIN_IDS[0]:
+    if user_id == ADMIN_ID:
         return ADMIN_NICK
     conn = get_conn()
     row = conn.execute("SELECT nick FROM users WHERE user_id=?", (user_id,)).fetchone()
@@ -797,7 +797,7 @@ async def task_got_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     for uid, nick in recipients:
         try:
             logging.info(f"[ЗАДАЧА] Отправляю uid={uid} nick={nick}")
-            await update.message.bot.send_message(
+            await ctx.bot.send_message(
                 chat_id=uid,
                 text=f"🔔 <b>Задача от {admin_nick}</b>\n\n{task_text}",
                 parse_mode="HTML",
@@ -816,7 +816,7 @@ async def task_got_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 else:
                     target_nick = get_user_nick(target) or f"id{target}"
                     copy_text = f"📋 <b>Копия: задача для {target_nick} от {admin_nick}</b>\n\n{task_text}"
-                await update.message.bot.send_message(
+                await ctx.bot.send_message(
                     chat_id=other_admin_id,
                     text=copy_text,
                     parse_mode="HTML"
