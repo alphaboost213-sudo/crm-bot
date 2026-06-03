@@ -28,7 +28,7 @@ logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=lo
 # ─── БД ───────────────────────────────────────────────────────────────────────
 
 def init_db():
-    conn = sqlite3.connect("bot.db")
+    conn = sqlite3.connect("/app/bot.db")
     c = conn.cursor()
     c.execute("""CREATE TABLE IF NOT EXISTS users (
         user_id INTEGER PRIMARY KEY,
@@ -60,7 +60,7 @@ def init_db():
     conn.close()
 
 def get_conn():
-    return sqlite3.connect("bot.db")
+    return sqlite3.connect("/app/bot.db")
 
 def get_user_nick(user_id):
     if user_id == ADMIN_ID:
