@@ -540,7 +540,7 @@ async def morning_job(context: ContextTypes.DEFAULT_TYPE):
                 # Без времени — шлём утром как раньше
                 if rdate != today:
                     continue
-            msg = f"⏰ Пингани {username}"
+            msg = f"⏰ {username}"
             if comment:
                 msg += f"\n{comment}"
             await context.bot.send_message(chat_id=owner_id, text=msg)
