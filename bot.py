@@ -28,7 +28,9 @@ logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=lo
 # ─── БД ───────────────────────────────────────────────────────────────────────
 
 def init_db():
-    conn = sqlite3.connect("/app/bot.db")
+    import os
+    os.makedirs("/app/data", exist_ok=True)
+    conn = sqlite3.connect("/app/data/bot.db")
     c = conn.cursor()
     c.execute("""CREATE TABLE IF NOT EXISTS users (
         user_id INTEGER PRIMARY KEY,
