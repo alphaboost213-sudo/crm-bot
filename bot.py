@@ -93,7 +93,7 @@ def get_conn():
     return sqlite3.connect("/app/data/bot.db")
 
 def get_user_nick(user_id):
-    if user_id == ADMIN_ID:
+    if user_id == ADMIN_IDS[0]:
         return ADMIN_NICK
     conn = get_conn()
     row = conn.execute("SELECT nick FROM users WHERE user_id=?", (user_id,)).fetchone()
@@ -791,16 +791,21 @@ async def task_got_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Принял, сделаю", callback_data=f"task_confirm_{task_id}")]
     ])
+
+    logging.info(f"[ЗАДАЧА] task_id={task_id}, target={target}, recipients={recipients}")
+
     for uid, nick in recipients:
         try:
+            logging.info(f"[ЗАДАЧА] Отправляю uid={uid} nick={nick}")
             await update.message.bot.send_message(
                 chat_id=uid,
                 text=f"🔔 <b>Задача от {admin_nick}</b>\n\n{task_text}",
                 parse_mode="HTML",
                 reply_markup=keyboard
             )
+            logging.info(f"[ЗАДАЧА] ✅ Успешно отправлено uid={uid}")
         except Exception as e:
-            logging.error(f"Не удалось отправить задачу {uid}: {e}")
+            logging.error(f"[ЗАДАЧА] ❌ Не удалось отправить uid={uid}: {e}")
 
     # Копия всем остальным админам (кроме того, кто отправил)
     for other_admin_id in ADMIN_IDS:
