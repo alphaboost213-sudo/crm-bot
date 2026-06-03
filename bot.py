@@ -12,6 +12,7 @@ from telegram.ext import (
 TOKEN = "8751256202:AAHNVreF9fcad96N1pP2cbNgN_8TO2YkvVw"
 MSK = timezone(timedelta(hours=3))
 MORNING_HOUR = 9
+ADMIN_ID = 7382509664  # Только этот юзер управляет рейтингом
 
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 
@@ -305,16 +306,18 @@ async def plan_check_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # ─── РЕЙТИНГ ──────────────────────────────────────────────────────────────────
 
-def rating_menu():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🏆 Посмотреть рейтинг", callback_data="rating_view")],
-        [InlineKeyboardButton("➕ Добавить участника", callback_data="rating_add")],
-        [InlineKeyboardButton("⭐ Начислить очки", callback_data="rating_points")],
-    ])
+def rating_menu(is_admin):
+    buttons = [[InlineKeyboardButton("🏆 Посмотреть рейтинг", callback_data="rating_view")]]
+    if is_admin:
+        buttons.append([InlineKeyboardButton("➕ Добавить участника", callback_data="rating_add")])
+        buttons.append([InlineKeyboardButton("⭐ Начислить очки", callback_data="rating_points")])
+    return InlineKeyboardMarkup(buttons)
 
 async def show_rating_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = update.message or update.callback_query.message
-    await msg.reply_text("🏆 <b>Рейтинг команды</b>", parse_mode="HTML", reply_markup=rating_menu())
+    user_id = update.effective_user.id
+    await msg.reply_text("🏆 <b>Рейтинг команды</b>", parse_mode="HTML", reply_markup=rating_menu(user_id == ADMIN_ID))
+
 
 async def rating_view(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
@@ -339,6 +342,9 @@ async def rating_view(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def rating_add_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
+    if update.effective_user.id != ADMIN_ID:
+        await update.callback_query.message.reply_text("Нет доступа")
+        return ConversationHandler.END
     await update.callback_query.message.reply_text("Введи username участника (с @ или без):")
     return RATING_ADD_USERNAME
 
@@ -374,6 +380,9 @@ async def rating_add_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def rating_points_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
+    if update.effective_user.id != ADMIN_ID:
+        await update.callback_query.message.reply_text("Нет доступа")
+        return ConversationHandler.END
     user_id = update.effective_user.id
     conn = get_conn()
     rows = conn.execute(
