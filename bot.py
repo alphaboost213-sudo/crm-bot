@@ -176,8 +176,9 @@ async def admin_all_reminders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         FROM reminders r
         LEFT JOIN users u ON u.user_id = r.owner_id
         WHERE r.done = 0
+          AND r.owner_id NOT IN ({})
         ORDER BY r.remind_date, u.nick
-    """).fetchall()
+    """.format(",".join("?" * len(ADMIN_IDS))), ADMIN_IDS).fetchall()
     conn.close()
 
     if not rows:
@@ -185,12 +186,12 @@ async def admin_all_reminders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     by_oper = {}
-    for i, (rid, owner_id, target, rdate, comment, nick) in enumerate(rows, 1):
+    for (rid, owner_id, target, rdate, comment, nick) in rows:
         label = nick or f"id{owner_id}"
         if label not in by_oper:
             by_oper[label] = []
         d = format_remind_date(rdate)
-        by_oper[label].append(f"  #{i} {target} — {d}\n  {comment or '—'}")
+        by_oper[label].append(f"  #{len(by_oper[label]) + 1} {target} — {d}\n  {comment or '—'}")
 
     lines = ["👁 <b>Напоминалки оперов:</b>\n"]
     for oper, items in by_oper.items():
