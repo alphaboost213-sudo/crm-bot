@@ -146,12 +146,12 @@ async def admin_all_reminders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # Группируем по оперу
     by_oper = {}
-    for rid, owner_id, target, rdate, comment, nick in rows:
+    for i, (rid, owner_id, target, rdate, comment, nick) in enumerate(rows, 1):
         label = nick or f"id{owner_id}"
         if label not in by_oper:
             by_oper[label] = []
         d = format_remind_date(rdate)
-        by_oper[label].append(f"  #{rid} {target} — {d}\n  {comment or '—'}")
+        by_oper[label].append(f"  #{i} {target} — {d}\n  {comment or '—'}")
 
     lines = ["👁 <b>Напоминалки оперов:</b>\n"]
     for oper, items in by_oper.items():
@@ -169,7 +169,7 @@ def format_remind_date(rdate_str):
         try:
             dt = datetime.strptime(rdate_str, fmt)
             if " " in rdate_str:
-                return dt.strftime("%d.%m.%Y в %H:%M Киев")
+                return dt.strftime("%d.%m.%Y в %H:%M")
             return dt.strftime("%d.%m.%Y")
         except ValueError:
             pass
@@ -250,7 +250,7 @@ async def remind_got_comment(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
     conn.commit()
     conn.close()
-    when_label = remind_dt.strftime("%d.%m.%Y в %H:%M Киев") if has_time else remind_dt.strftime("%d.%m.%Y")
+    when_label = remind_dt.strftime("%d.%m.%Y в %H:%M") if has_time else remind_dt.strftime("%d.%m.%Y")
     await update.message.reply_text(
         f"✅ Сохранено!\nКого: {username}\nКогда: {when_label}\nКомментарий: {comment or '—'}",
         reply_markup=main_menu_keyboard(user_id)
@@ -270,9 +270,9 @@ async def remind_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.message.reply_text("Активных напоминалок нет")
         return
     lines = ["📋 <b>Активные напоминалки:</b>\n"]
-    for rid, username, rdate, comment in rows:
+    for i, (rid, username, rdate, comment) in enumerate(rows, 1):
         d = format_remind_date(rdate)
-        lines.append(f"#{rid} {username} — {d}\n  {comment or '—'}")
+        lines.append(f"#{i} {username} — {d}\n  {comment or '—'}")
     await update.callback_query.message.reply_text("\n\n".join(lines), parse_mode="HTML")
 
 async def remind_close_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -417,13 +417,13 @@ async def rating_add_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         await update.callback_query.message.reply_text("Нет доступа")
         return ConversationHandler.END
-    await update.callback_query.message.reply_text("Введи username участника (с @ или без):")
+    await update.callback_query.message.reply_text("Введи имя участника")
     return RATING_ADD_USERNAME
 
 async def rating_add_username(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     username = update.message.text.strip()
-    if not username.startswith("@"):
-        username = "@" + username
+    if not username.startswith:
+        username = + username
     ctx.user_data["new_member_username"] = username
     await update.message.reply_text(f"Окей, {username}\nТеперь введи имя для рейтинга:")
     return RATING_ADD_NAME
