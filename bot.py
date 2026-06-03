@@ -60,7 +60,7 @@ def init_db():
     conn.close()
 
 def get_conn():
-    return sqlite3.connect("/app/bot.db")
+    return sqlite3.connect("/app/data/bot.db")
 
 def get_user_nick(user_id):
     if user_id == ADMIN_ID:
