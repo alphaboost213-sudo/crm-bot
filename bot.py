@@ -10,7 +10,7 @@ from telegram.ext import (
 )
 
 TOKEN = "8751256202:AAHNVreF9fcad96N1pP2cbNgN_8TO2YkvVw"
-MSK = timezone(timedelta(hours=3))
+KYIV = timezone(timedelta(hours=3))
 MORNING_HOUR = 9
 ADMIN_ID = 7382509664
 ADMIN_NICK = "Kurama"
@@ -167,7 +167,7 @@ def format_remind_date(rdate_str):
         try:
             dt = datetime.strptime(rdate_str, fmt)
             if " " in rdate_str:
-                return dt.strftime("%d.%m.%Y в %H:%M МСК")
+                return dt.strftime("%d.%m.%Y в %H:%M Киев")
             return dt.strftime("%d.%m.%Y")
         except ValueError:
             pass
@@ -197,7 +197,7 @@ async def remind_got_username(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["remind_username"] = username
     await update.message.reply_text(
         f"Окей, {username}\n"
-        "Введи дату (и время по желанию) по МСК:\n\n"
+        "Введи дату (и время по желанию) по Киев:\n\n"
         "Только дата: 15.07.2025\n"
         "Дата + время: 15.07.2025 14:30"
     )
@@ -248,7 +248,7 @@ async def remind_got_comment(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
     conn.commit()
     conn.close()
-    when_label = remind_dt.strftime("%d.%m.%Y в %H:%M МСК") if has_time else remind_dt.strftime("%d.%m.%Y")
+    when_label = remind_dt.strftime("%d.%m.%Y в %H:%M Киев") if has_time else remind_dt.strftime("%d.%m.%Y")
     await update.message.reply_text(
         f"✅ Сохранено!\nКого: {username}\nКогда: {when_label}\nКомментарий: {comment or '—'}",
         reply_markup=main_menu_keyboard(user_id)
@@ -521,13 +521,13 @@ async def handle_menu_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def morning_job(context: ContextTypes.DEFAULT_TYPE):
     today = str(date.today())
     conn = get_conn()
-    now_msk = datetime.now(MSK)
+    now_msk = datetime.now(KYIV)
     rows = conn.execute(
         "SELECT id, owner_id, target_username, remind_date, comment FROM reminders WHERE done=0"
     ).fetchall()
     for rid, owner_id, username, rdate, comment in rows:
         try:
-            # Если есть время — шлём только в нужный час МСК
+            # Если есть время — шлём только в нужный час Киев
             if " " in rdate:
                 dt = datetime.strptime(rdate, "%Y-%m-%d %H:%M")
                 if dt.date() != now_msk.date():
@@ -542,10 +542,13 @@ async def morning_job(context: ContextTypes.DEFAULT_TYPE):
             if comment:
                 msg += f"\n{comment}"
             await context.bot.send_message(chat_id=owner_id, text=msg)
+            # Помечаем как отправленную чтобы не дублировать
+            conn.execute("UPDATE reminders SET done=1 WHERE id=?", (rid,))
+            conn.commit()
         except Exception as e:
             logging.error(f"Напоминалка {rid}: {e}")
 
-    # Утренний план — только в 9:00 МСК
+    # Утренний план — только в 9:00 Киев
     if now_msk.hour == MORNING_HOUR and now_msk.minute < 1:
         plan_owners = conn.execute("SELECT DISTINCT owner_id FROM daily_plan WHERE created_date=?", (today,)).fetchall()
         for (owner_id,) in plan_owners:
