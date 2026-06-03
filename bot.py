@@ -189,13 +189,13 @@ async def show_reminders_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def remind_add_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    await update.callback_query.message.reply_text("Введи username клиента (с @ или без):")
+    await update.callback_query.message.reply_text("Введи имя клиента:")
     return REMIND_USERNAME
 
 async def remind_got_username(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     username = update.message.text.strip()
-    if not username.startswith("@"):
-        username = "@" + username
+    if not username.startswith:
+        username = + username
     ctx.user_data["remind_username"] = username
     await update.message.reply_text(
         f"Окей, {username}\n"
