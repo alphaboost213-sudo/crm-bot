@@ -9,7 +9,7 @@ from telegram.ext import (
     ConversationHandler, filters, ContextTypes
 )
 
-TOKEN = "8751256202:AAHdUEiAUnutrNjSDDMaDH32hEFicnvvxjc"
+TOKEN = "8751256202:AAHAeHWTlFe2i-NF7o-iw37kDj_c4ygRVkw"
 KYIV = timezone(timedelta(hours=3))
 MORNING_HOUR = 9
 
