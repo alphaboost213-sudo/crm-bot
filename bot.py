@@ -487,7 +487,7 @@ async def rating_view(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lines = ["🏆 <b>Рейтинг команды:</b>\n"]
     for i, (name, username, points) in enumerate(rows):
         medal = medals[i] if i < 3 else f"{i+1}."
-        lines.append(f"{medal} {name} ({username}) — {points} тсов")
+        lines.append(f"{medal} {name} — {points} тс")
     await update.callback_query.message.reply_text("\n".join(lines), parse_mode="HTML", reply_markup=kb)
 
 async def rating_add_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -523,7 +523,7 @@ async def rating_add_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     else:
         conn.execute("INSERT INTO rating (owner_id, username, display_name, points) VALUES (?, ?, ?, 0)", (user_id, username, display_name))
         conn.commit()
-        await update.message.reply_text(f"✅ Добавлен: {display_name} ({username})", reply_markup=main_menu_keyboard(user_id))
+        await update.message.reply_text(f"✅ Добавлен: {display_name}", reply_markup=main_menu_keyboard(user_id))
     conn.close()
     return ConversationHandler.END
 
@@ -541,7 +541,7 @@ async def rating_points_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not rows:
         await update.callback_query.message.reply_text("Сначала добавь участников")
         return ConversationHandler.END
-    buttons = [[InlineKeyboardButton(f"{name} ({pts} оч.)", callback_data=f"pts_who_{uname}")] for uname, name, pts in rows]
+    buttons = [[InlineKeyboardButton(f"{name} ({pts} тс)", callback_data=f"pts_who_{uname}")] for uname, name, pts in rows]
     buttons.append([back_button("back_to_rating")])
     await update.callback_query.message.reply_text("Кому начислить тсы?", reply_markup=InlineKeyboardMarkup(buttons))
     return RATING_POINTS_WHO
@@ -606,7 +606,7 @@ async def rating_delete_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.message.reply_text("Рейтинг пустой")
         return
     buttons = [
-        [InlineKeyboardButton(f"🗑 {name} ({uname}) — {pts} оч.", callback_data=f"del_rating_{rid}")]
+        [InlineKeyboardButton(f"🗑 {name} ({uname}) — {pts} тс", callback_data=f"del_rating_{rid}")]
         for rid, name, uname, pts in rows
     ]
     buttons.append([back_button("back_to_rating")])
@@ -648,7 +648,7 @@ async def rating_edit_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.message.reply_text("Рейтинг пустой")
         return ConversationHandler.END
     buttons = [
-        [InlineKeyboardButton(f"✏️ {name} ({uname}) — {pts} оч.", callback_data=f"edit_rating_{rid}")]
+        [InlineKeyboardButton(f"✏️ {name} ({uname}) — {pts} тс", callback_data=f"edit_rating_{rid}")]
         for rid, name, uname, pts in rows
     ]
     buttons.append([back_button("back_to_rating")])
