@@ -438,7 +438,7 @@ def rating_menu(is_admin_user):
     buttons = [[InlineKeyboardButton("🏆 Посмотреть рейтинг", callback_data="rating_view")]]
     if is_admin_user:
         buttons.append([InlineKeyboardButton("➕ Добавить участника", callback_data="rating_add")])
-        buttons.append([InlineKeyboardButton("⭐ Начислить очки", callback_data="rating_points")])
+        buttons.append([InlineKeyboardButton("⭐ Начислить тсы", callback_data="rating_points")])
         buttons.append([InlineKeyboardButton("✏️ Редактировать участника", callback_data="rating_edit")])
         buttons.append([InlineKeyboardButton("🗑 Удалить участника", callback_data="rating_delete")])
     buttons.append([back_button("back_to_menu")])
@@ -487,7 +487,7 @@ async def rating_view(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lines = ["🏆 <b>Рейтинг команды:</b>\n"]
     for i, (name, username, points) in enumerate(rows):
         medal = medals[i] if i < 3 else f"{i+1}."
-        lines.append(f"{medal} {name} ({username}) — {points} очков")
+        lines.append(f"{medal} {name} ({username}) — {points} тсов")
     await update.callback_query.message.reply_text("\n".join(lines), parse_mode="HTML", reply_markup=kb)
 
 async def rating_add_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -543,7 +543,7 @@ async def rating_points_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     buttons = [[InlineKeyboardButton(f"{name} ({pts} оч.)", callback_data=f"pts_who_{uname}")] for uname, name, pts in rows]
     buttons.append([back_button("back_to_rating")])
-    await update.callback_query.message.reply_text("Кому начислить очки?", reply_markup=InlineKeyboardMarkup(buttons))
+    await update.callback_query.message.reply_text("Кому начислить тсы?", reply_markup=InlineKeyboardMarkup(buttons))
     return RATING_POINTS_WHO
 
 async def rating_points_who(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -556,7 +556,7 @@ async def rating_points_who(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
          InlineKeyboardButton("-5", callback_data="pts_delta_-5")],
         [back_button("back_to_rating")],
     ])
-    await update.callback_query.message.reply_text("Сколько очков?", reply_markup=buttons)
+    await update.callback_query.message.reply_text("Сколько тсов?", reply_markup=buttons)
     return RATING_POINTS_DELTA
 
 async def rating_points_delta(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -583,7 +583,7 @@ async def rating_points_comment(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         conn.commit()
         sign = "+" if delta > 0 else ""
         await update.message.reply_text(
-            f"✅ {username}: {sign}{delta} очков\nИтого: {new_points}\n{comment}",
+            f"✅ {username}: {sign}{delta} тс\nИтого: {new_points}\n{comment}",
             reply_markup=main_menu_keyboard(user_id)
         )
     conn.close()
@@ -669,7 +669,7 @@ async def rating_edit_chosen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["edit_rating_old"] = row
     keyboard = InlineKeyboardMarkup([[back_button("back_to_rating")]])
     await update.callback_query.message.reply_text(
-        f"Редактирую: <b>{row[0]}</b> ({row[1]}), {row[2]} очков\n\n"
+        f"Редактирую: <b>{row[0]}</b> ({row[1]}), {row[2]} тс\n\n"
         "Введи новое отображаемое имя (или «-» чтобы не менять):",
         parse_mode="HTML",
         reply_markup=keyboard
@@ -682,7 +682,7 @@ async def rating_edit_new_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["edit_new_name"] = new_name if new_name != "-" else old[0]
     keyboard = InlineKeyboardMarkup([[back_button("back_to_rating")]])
     await update.message.reply_text(
-        f"Текущие очки: {old[2]}\nВведи новое количество очков (или «-» чтобы не менять):",
+        f"Текущие тсы: {old[2]}\nВведи новое количество тсов (или «-» чтобы не менять):",
         reply_markup=keyboard
     )
     return RATING_EDIT_NEW_POINTS
@@ -709,7 +709,7 @@ async def rating_edit_new_points(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
     conn.commit()
     conn.close()
     await update.message.reply_text(
-        f"✅ Обновлено!\nИмя: {new_name}\nОчки: {new_points}",
+        f"✅ Обновлено!\nИмя: {new_name}\nТсы: {new_points}",
         reply_markup=main_menu_keyboard(user_id)
     )
     return ConversationHandler.END
